@@ -1,0 +1,21 @@
+﻿{
+    "VID_EXTS":  [
+                     ".mp4",
+                     ".avi",
+                     ".mov",
+                     ".mkv",
+                     ".wmv",
+                     ".flv"
+                 ],
+    "DESIGNER":  "WCY",
+    "IMG_EXTS":  [
+                     ".jpg",
+                     ".jpeg",
+                     ".png",
+                     ".bmp",
+                     ".webp",
+                     ".gif"
+                 ],
+    "VIDEO_OUT_DIR":  "E:\\输出\\输出-雷霆战机",
+    "IMAGE_OUT_DIR":  "D:\\国内-平面广告\\输出-jpg"
+}
