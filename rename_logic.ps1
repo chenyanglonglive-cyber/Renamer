@@ -1,4 +1,57 @@
-﻿# PowerShell Rename Logic (ASCII-Safe with Unicode Escapes)
+# PowerShell Rename Logic (ASCII-Safe with Unicode Escapes)
+try { Add-Type -AssemblyName System.Drawing } catch {}
+
+# Image Compression Function
+function Save-CompressedImage {
+    param(
+        [string]$SourcePath,
+        [string]$DestPath,
+        [long]$MaxBytes = 256000
+    )
+    
+    $img = $null
+    try {
+        $img = [System.Drawing.Image]::FromFile($SourcePath)
+        
+        $codecs = [System.Drawing.Imaging.ImageCodecInfo]::GetImageDecoders()
+        $jpegCodec = $codecs | Where-Object { $_.FormatID -eq [System.Drawing.Imaging.ImageFormat]::Jpeg.Guid }
+        
+        $quality = 95L
+        $success = $false
+        
+        while ($quality -ge 10) {
+            $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+            $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $quality)
+            
+            $ms = New-Object System.IO.MemoryStream
+            $img.Save($ms, $jpegCodec, $encParams)
+            
+            if ($ms.Length -le $MaxBytes) {
+                $fs = New-Object System.IO.FileStream($DestPath, [System.IO.FileMode]::Create)
+                $ms.WriteTo($fs)
+                $fs.Close()
+                $ms.Close()
+                $success = $true
+                break
+            }
+            $ms.Close()
+            $quality -= 5
+        }
+        
+        if (-not $success) {
+            $encParams = New-Object System.Drawing.Imaging.EncoderParameters(1)
+            $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, 10L)
+            $img.Save($DestPath, $jpegCodec, $encParams)
+        }
+        
+        $img.Dispose()
+        $img = $null
+    } catch {
+        if ($null -ne $img) { $img.Dispose(); $img = $null }
+        # Fallback if error
+        Copy-Item -Path $SourcePath -Destination $DestPath -Force
+    }
+}
 
 # Define Dimensions Function (Move outside try for cleaner structure)
 function Get-Dims {
@@ -101,10 +154,42 @@ try {
     $v_cnt = 0
     $i_cnt = 0
 
+    # 3.5 Pre-scan for large images
+    $largeImageCount = 0
+    $items = Get-ChildItem -Path $DIR
+    foreach ($item in $items) {
+        if ($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|^\.') { continue }
+        if ($item.PSIsContainer) {
+            $sub = @(Get-ChildItem -Path $item.FullName -File)
+            foreach ($f in $sub) {
+                $ext = $f.Extension.ToLower()
+                if ($S.IMG_EXTS -contains $ext -and $f.Length -gt 256000) {
+                    $largeImageCount++
+                }
+            }
+        } else {
+            $ext = $item.Extension.ToLower()
+            if ($S.IMG_EXTS -contains $ext -and $item.Length -gt 256000) {
+                $largeImageCount++
+            }
+        }
+    }
+
+    $doCompress = $false
+    if ($largeImageCount -gt 0) {
+        $objShell = New-Object -ComObject WScript.Shell
+        # $msg = "发现 N 个图片大于 250KB。是否压缩？" (Using ASCII-safe hex)
+        $msg = "$([char]0x53D1)$([char]0x73B0) $largeImageCount $([char]0x4E2A)$([char]0x56FE)$([char]0x7247)$([char]0x5927)$([char]0x4E8E) 250KB.`n`n$([char]0x662F)$([char]0x5426)$([char]0x538B)$([char]0x7F29)? (Keep Dimensions, Reduce Quality)"
+        $btn = $objShell.Popup($msg, 0, "Compression", 4 + 32) # 4 = Yes/No, 32 = Question
+        if ($btn -eq 6) { # 6 = Yes
+            $doCompress = $true
+        }
+    }
+
     # 4. Main Loop
     $items = Get-ChildItem -Path $DIR
     foreach ($item in $items) {
-        if ($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1') { continue }
+        if ($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|^\.') { continue }
         
         # A. Folders (9-image logic)
         if ($item.PSIsContainer) {
@@ -161,11 +246,52 @@ try {
             
             # Now Rename 1 file and move all
             foreach ($f in $sub) {
+                $fExt = $f.Extension.ToLower()
+                $isImg = $S.IMG_EXTS -contains $fExt
+
+                # Format Check: .jpg (Allow .jpeg too)
+                if ($isImg -and -not ($fExt -eq '.jpg' -or $fExt -eq '.jpeg')) {
+                    $fmtWarnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x6587)$([char]0x4EF6)$([char]0x4E0D)$([char]0x662F)$([char]0x89C4)$([char]0x5B9A)$([char]0x683C)$([char]0x5F0F)! (JPG)`n`n$([char]0x6587)$([char]0x4EF6): $($f.Name)`n$([char]0x683C)$([char]0x5F0F): $fExt"
+                    (New-Object -ComObject WScript.Shell).Popup($fmtWarnMsg, 0, "Format Warning", 48) | Out-Null
+                }
+
+                $fNeedResize = $false
+                if ($isImg) {
+                    $fd = Get-Dims $f.FullName
+                    if ($fd.W -gt 0 -and $fd.H -gt 0 -and $fd.W -eq $fd.H -and ($fd.W -ne 800 -or $fd.H -ne 800)) {
+                        $fNeedResize = $true
+                        $warnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x65B9)$([char]0x56FE)$([char]0x5C3A)$([char]0x5BF8)$([char]0x4E0D)$([char]0x7B26)$([char]0x5408) 800*800 $([char]0x89C4)$([char]0x683C)$([char]0xFF0C)$([char]0x5DF2)$([char]0x4FEE)$([char]0x6539)$([char]0x4E3A) 800*800 $([char]0x7684) JPG $([char]0x683C)$([char]0x5F0F)！`n`n$([char]0x6587)$([char]0x4EF6): $($f.Name)`n$([char]0x539F)$([char]0x5C3A)$([char]0x5BF8): $($fd.W) x $($fd.H)"
+                        (New-Object -ComObject WScript.Shell).Popup($warnMsg, 0, "Dimension Warning", 48) | Out-Null
+                    }
+                }
+
                 if ($f.FullName -eq $file1.FullName) {
-                    $newFileN = "$newN$($f.Extension)"
-                    Move-Item -Path $f.FullName -Destination (Join-Path $dest $newFileN) -Force -ErrorAction SilentlyContinue
+                    if ($fNeedResize) {
+                        $targetName = "$newN.jpg"
+                    } else {
+                        $targetName = "$newN$($f.Extension)"
+                    }
                 } else {
-                    Move-Item -Path $f.FullName -Destination (Join-Path $dest $f.Name) -Force -ErrorAction SilentlyContinue
+                    if ($fNeedResize) {
+                        $targetName = [System.IO.Path]::ChangeExtension($f.Name, '.jpg')
+                    } else {
+                        $targetName = $f.Name
+                    }
+                }
+
+                $targetPath = Join-Path $dest $targetName
+
+                if ($fNeedResize) {
+                    & ffmpeg -y -hide_banner -loglevel error -i $f.FullName -vf scale=800:800 $targetPath
+                    if ($doCompress -and $isImg -and (Get-Item $targetPath).Length -gt 256000) {
+                        Save-CompressedImage -SourcePath $targetPath -DestPath $targetPath -MaxBytes 256000
+                    }
+                    Remove-Item -Path $f.FullName -Force -ErrorAction SilentlyContinue
+                } elseif ($doCompress -and $isImg -and $f.Length -gt 256000) {
+                    Save-CompressedImage -SourcePath $f.FullName -DestPath $targetPath -MaxBytes 256000
+                    Remove-Item -Path $f.FullName -Force -ErrorAction SilentlyContinue
+                } else {
+                    Move-Item -Path $f.FullName -Destination $targetPath -Force -ErrorAction SilentlyContinue
                 }
             }
             
@@ -195,6 +321,16 @@ try {
                 $d = Get-Dims $item.FullName
                 
                 if ($isV) {
+                    # Format Check: .mp4
+                    if ($ext -ne '.mp4') {
+                        $fmtWarnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x6587)$([char]0x4EF6)$([char]0x4E0D)$([char]0x662F)$([char]0x89C4)$([char]0x5B9A)$([char]0x683C)$([char]0x5F0F)! (MP4)`n`n$([char]0x6587)$([char]0x4EF6): $($item.Name)`n$([char]0x683C)$([char]0x5F0F): $ext"
+                        (New-Object -ComObject WScript.Shell).Popup($fmtWarnMsg, 0, "Format Warning", 48) | Out-Null
+                    }
+                    # Dimension Check: 1280*720 or 720*1280
+                    if (-not (($d.W -eq 1280 -and $d.H -eq 720) -or ($d.W -eq 720 -and $d.H -eq 1280))) {
+                        $warnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x89C6)$([char]0x9891)$([char]0x4E0D)$([char]0x662F)$([char]0x89C4)$([char]0x5B9A)$([char]0x5C3A)$([char]0x5BF8)! (1280*720 / 720*1280)`n`n$([char]0x6587)$([char]0x4EF6): $($item.Name)`n$([char]0x5C3A)$([char]0x5BF8): $($d.W) x $($d.H)"
+                        (New-Object -ComObject WScript.Shell).Popup($warnMsg, 0, "Dimension Warning", 48) | Out-Null
+                    }
                     # 妯棰?= \u6A2A\u89C6\u9891, 绔栬棰?= \u7AD6\u89C6\u9891
                     $type = if ($d.W -gt $d.H) { "$([char]0x6A2A)$([char]0x89C6)$([char]0x9891)" } else { "$([char]0x7AD6)$([char]0x89C6)$([char]0x9891)" }
                     $seq = $Q.video_seq
@@ -202,18 +338,52 @@ try {
                     $Q.video_seq++
                     $v_cnt++
                 } else {
-                    # 妯浘 = \u6A2A\u56FE, 绔栧浘 = \u7AD6\u56FE
-                    $type = if ($d.W -gt $d.H) { "$([char]0x6A2A)$([char]0x56FE)" } else { "$([char]0x7AD6)$([char]0x56FE)" }
+                    # Format Check: .jpg
+                    if (-not ($ext -eq '.jpg' -or $ext -eq '.jpeg')) {
+                        $fmtWarnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x6587)$([char]0x4EF6)$([char]0x4E0D)$([char]0x662F)$([char]0x89C4)$([char]0x5B9A)$([char]0x683C)$([char]0x5F0F)! (JPG)`n`n$([char]0x6587)$([char]0x4EF6): $($item.Name)`n$([char]0x683C)$([char]0x5F0F): $ext"
+                        (New-Object -ComObject WScript.Shell).Popup($fmtWarnMsg, 0, "Format Warning", 48) | Out-Null
+                    }
+                    # 横图 = \u6A2A\u56FE, 竖图 = \u7AD6\u56FE, 方图 = \u65B9\u56FE
+                    $type = if ($d.W -gt 0 -and $d.H -gt 0 -and $d.W -eq $d.H) { "$([char]0x65B9)$([char]0x56FE)" } elseif ($d.W -gt $d.H) { "$([char]0x6A2A)$([char]0x56FE)" } else { "$([char]0x7AD6)$([char]0x56FE)" }
                     $seq = $Q.image_seq
                     $out = $S.IMAGE_OUT_DIR
                     $Q.image_seq++
                     $i_cnt++
                 }
                 
+                $fNeedResize = $false
+                if ($isI -and $d.W -gt 0 -and $d.H -gt 0 -and $d.W -eq $d.H) {
+                    if ($d.W -ne 800 -or $d.H -ne 800) {
+                        $fNeedResize = $true
+                        $warnMsg = "$([char]0x6CE8)$([char]0x610F)$([char]0xFF1A)$([char]0x65B9)$([char]0x56FE)$([char]0x5C3A)$([char]0x5BF8)$([char]0x4E0D)$([char]0x7B26)$([char]0x5408) 800*800 $([char]0x89C4)$([char]0x683C)$([char]0xFF0C)$([char]0x5DF2)$([char]0x4FEE)$([char]0x6539)$([char]0x4E3A) 800*800 $([char]0x7684) JPG $([char]0x683C)$([char]0x5F0F)！`n`n$([char]0x6587)$([char]0x4EF6): $($item.Name)`n$([char]0x539F)$([char]0x5C3A)$([char]0x5BF8): $($d.W) x $($d.H)"
+                        (New-Object -ComObject WScript.Shell).Popup($warnMsg, 0, "Dimension Warning", 48) | Out-Null
+                        $ext = '.jpg'
+                    }
+                }
+
+                if ($doCompress -and $isI -and $item.Length -gt 256000) {
+                    if ($ext -ne '.jpg' -and $ext -ne '.jpeg') {
+                        $ext = '.jpg'
+                    }
+                }
+
                 $finalName = "B$($seq)-$($item.BaseName)-$type-$DATE_STR-$($S.DESIGNER)$ext"
                 if (-not (Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
                 
-                Move-Item -Path $item.FullName -Destination (Join-Path $out $finalName) -Force
+                $destPath = Join-Path $out $finalName
+                if ($fNeedResize) {
+                    & ffmpeg -y -hide_banner -loglevel error -i $item.FullName -vf scale=800:800 $destPath
+                    if ($doCompress -and $isI -and (Get-Item $destPath).Length -gt 256000) {
+                        Save-CompressedImage -SourcePath $destPath -DestPath $destPath -MaxBytes 256000
+                    }
+                    Remove-Item -Path $item.FullName -Force -ErrorAction SilentlyContinue
+                } elseif ($doCompress -and $isI -and $item.Length -gt 256000) {
+                    Save-CompressedImage -SourcePath $item.FullName -DestPath $destPath -MaxBytes 256000
+                    Remove-Item -Path $item.FullName -Force -ErrorAction SilentlyContinue
+                } else {
+                    Move-Item -Path $item.FullName -Destination $destPath -Force
+                }
+                
                 $logLine = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$($item.Name),$finalName,$out"
                 
                 # Robust Logging: Handle cases where the file might be locked by Excel
