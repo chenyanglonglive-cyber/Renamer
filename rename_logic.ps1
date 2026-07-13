@@ -1,4 +1,8 @@
 # PowerShell Rename Logic (ASCII-Safe with Unicode Escapes)
+param(
+    [string]$ProjectSuffix = ""
+)
+
 try { Add-Type -AssemblyName System.Drawing } catch {}
 
 # Image Compression Function
@@ -97,9 +101,9 @@ try {
     if (-not (Test-Path $SEQ_PATH)) { throw "Missing sequence.json" }
 
     # 3. Load config
-    $S = Get-Content $SET_PATH -Raw | ConvertFrom-Json
+    $S = Get-Content $SET_PATH -Raw -Encoding UTF8 | ConvertFrom-Json
     
-    $Q_RAW = Get-Content $SEQ_PATH -Raw
+    $Q_RAW = Get-Content $SEQ_PATH -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($Q_RAW)) {
         Write-Host "Sequence file is empty. Recovering from naming_log.csv..." -ForegroundColor Yellow
         $img_max = 0
@@ -151,6 +155,10 @@ try {
     }
 
     $DATE_STR = (Get-Date).ToString('yyyyMMdd')
+    $PROJECT_SUFFIX_PART = ""
+    if (-not [string]::IsNullOrWhiteSpace($ProjectSuffix)) {
+        $PROJECT_SUFFIX_PART = "-$ProjectSuffix"
+    }
     $v_cnt = 0
     $i_cnt = 0
 
@@ -238,7 +246,7 @@ try {
             }
             
             $type9 = "9$([char]0x56FE)"
-            $newN = "B$($Q.image_seq)-$inputName-$type9-$DATE_STR-$($S.DESIGNER)"
+            $newN = "B$($Q.image_seq)-$inputName-$type9-$DATE_STR-$($S.DESIGNER)$PROJECT_SUFFIX_PART"
             $dest = Join-Path $S.IMAGE_OUT_DIR $newN
             
             if (-not (Test-Path $S.IMAGE_OUT_DIR)) { New-Item -ItemType Directory -Path $S.IMAGE_OUT_DIR -Force | Out-Null }
@@ -367,7 +375,7 @@ try {
                     }
                 }
 
-                $finalName = "B$($seq)-$($item.BaseName)-$type-$DATE_STR-$($S.DESIGNER)$ext"
+                $finalName = "B$($seq)-$($item.BaseName)-$type-$DATE_STR-$($S.DESIGNER)$PROJECT_SUFFIX_PART$ext"
                 if (-not (Test-Path $out)) { New-Item -ItemType Directory -Path $out -Force | Out-Null }
                 
                 $destPath = Join-Path $out $finalName

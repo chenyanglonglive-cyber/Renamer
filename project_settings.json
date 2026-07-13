@@ -1,0 +1,19 @@
+﻿{
+    "current_project": "英雄请出战",
+    "projects": {
+        "雷霆战机": {
+            "suffix": "雷霆",
+            "image_out_dir": "D:\\国内-平面广告\\输出-jpg",
+            "video_out_dir": "E:\\输出\\输出-雷霆战机",
+            "image_seq": 3596,
+            "video_seq": 1537
+        },
+        "英雄请出战": {
+            "suffix": "英雄",
+            "image_out_dir": "F:\\英雄请出战\\输出-图片-英雄",
+            "video_out_dir": "F:\\英雄请出战\\输出-视频-英雄",
+            "image_seq": 678,
+            "video_seq": 555
+        }
+    }
+}

@@ -1,4 +1,4 @@
 @echo off
 set "CURRENT_DIR=%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%CURRENT_DIR%rename_logic.ps1"
+python "%CURRENT_DIR%rename_gui.py"
 pause
