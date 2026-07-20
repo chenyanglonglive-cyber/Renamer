@@ -3,10 +3,12 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -32,10 +35,30 @@ SEQUENCE_PATH = BASE_DIR / "sequence.json"
 PROJECT_SETTINGS_PATH = BASE_DIR / "project_settings.json"
 RENAME_SCRIPT_PATH = BASE_DIR / "rename_logic.ps1"
 LOG_PATH = BASE_DIR / "naming_log.csv"
+ASSETS_DIR = BASE_DIR / "assets"
+IGNORED_NAMES = {
+    "settings.json",
+    "sequence.json",
+    "naming_log.csv",
+    "naming_log_backup.csv",
+    "project_settings.json",
+    "assets",
+    "__pycache__",
+}
 
 PROJECTS = {
     "雷霆战机": "雷霆",
     "英雄请出战": "英雄",
+}
+
+PROJECT_LOGOS = {
+    "雷霆战机": [
+        ASSETS_DIR / "thunder_icon.jpg",
+        Path(r"Z:\雷霆战机（中转文件）\雷霆战机平面素材\UI\ICON.jpg"),
+    ],
+    "英雄请出战": [
+        ASSETS_DIR / "hero_icon.png",
+    ],
 }
 
 
@@ -128,6 +151,63 @@ def write_runtime_config(project):
     )
 
 
+def ignored_workspace_item(path):
+    name = path.name
+    lower_name = name.lower()
+    return (
+        name in IGNORED_NAMES
+        or name.startswith(".")
+        or lower_name.endswith((".bat", ".ps1", ".py", ".zip"))
+    )
+
+
+def has_digit_marker(path, number):
+    stem = path.stem
+    marker = str(number)
+    padded = f"0{number}"
+    parts = []
+    current = ""
+    for char in stem:
+        if char.isdigit():
+            current += char
+        elif current:
+            parts.append(current)
+            current = ""
+    if current:
+        parts.append(current)
+    return marker in parts or padded in parts
+
+
+def is_complete_nine_image_folder(path):
+    if not path.is_dir() or ignored_workspace_item(path):
+        return False
+    files = [child for child in path.iterdir() if child.is_file()]
+    if len(files) < 9:
+        return False
+    return all(any(has_digit_marker(file_path, index) for file_path in files) for index in range(1, 10))
+
+
+def scan_works():
+    settings = read_json(SETTINGS_PATH, {})
+    img_exts = {ext.lower() for ext in settings.get("IMG_EXTS", [])}
+    vid_exts = {ext.lower() for ext in settings.get("VID_EXTS", [])}
+    works = []
+    nine_folders = []
+
+    for item in BASE_DIR.iterdir():
+        if ignored_workspace_item(item):
+            continue
+        if item.is_dir():
+            if is_complete_nine_image_folder(item):
+                works.append(item)
+                nine_folders.append(item)
+            continue
+        if item.suffix.lower() in img_exts or item.suffix.lower() in vid_exts:
+            works.append(item)
+
+    return works, nine_folders
+
+
 def log_line_count():
     if not LOG_PATH.exists():
         return 0
@@ -150,14 +230,22 @@ def detect_category(name):
     return "未知"
 
 
+def available_logo_path(project_name):
+    for path in PROJECT_LOGOS.get(project_name, []):
+        if path.exists():
+            return str(path)
+    return ""
+
+
 class RenameWorker(QThread):
     finished_ok = Signal(int)
     failed = Signal(str)
 
-    def __init__(self, suffix, log_start_line):
+    def __init__(self, suffix, log_start_line, folder_name_map_path=""):
         super().__init__()
         self.suffix = suffix
         self.log_start_line = log_start_line
+        self.folder_name_map_path = folder_name_map_path
 
     def run(self):
         command = [
@@ -170,6 +258,8 @@ class RenameWorker(QThread):
             "-ProjectSuffix",
             self.suffix,
         ]
+        if self.folder_name_map_path:
+            command.extend(["-FolderNameMapPath", self.folder_name_map_path])
         result = subprocess.run(
             command,
             cwd=str(BASE_DIR),
@@ -276,14 +366,86 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+class NineImageNameDialog(QDialog):
+    def __init__(self, folders, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("9图名称确认")
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.resize(560, 160 + min(len(folders), 6) * 42)
+        self.folders = folders
+        self.edits = {}
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"检测到 {len(folders)} 个 9图作品，请确认命名基础名称。")
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        layout.addLayout(form)
+        for folder in folders:
+            edit = QLineEdit(folder.name)
+            self.edits[str(folder)] = edit
+            form.addRow(folder.name, edit)
+
+        buttons = QHBoxLayout()
+        layout.addLayout(buttons)
+        buttons.addStretch()
+        ok_button = QPushButton("确定")
+        cancel_button = QPushButton("取消")
+        ok_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(ok_button)
+        buttons.addWidget(cancel_button)
+        self.setStyleSheet(
+            """
+            QDialog {
+                background: #242424;
+                color: #f0f0f0;
+            }
+            QLabel {
+                color: #f0f0f0;
+            }
+            QLineEdit {
+                background: #333333;
+                color: #f0f0f0;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 6px;
+            }
+            QPushButton {
+                background: #3a3a3a;
+                color: #f0f0f0;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background: #454545;
+            }
+            """
+        )
+
+    def values(self):
+        return {path: edit.text().strip() for path, edit in self.edits.items()}
+
+    def accept(self):
+        empty_names = [Path(path).name for path, value in self.values().items() if not value]
+        if empty_names:
+            QMessageBox.warning(self, "名称不能为空", "请填写所有 9图作品名称。")
+            return
+        super().accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("自动化命名")
-        self.resize(620, 430)
+        self.resize(680, 470)
         self.data = load_or_create_project_settings()
         self.worker = None
         self.active_project_name = None
+        self.selected_project_name = self.data.get("current_project", "雷霆战机")
+        self.folder_name_map_path = ""
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -296,13 +458,16 @@ class MainWindow(QMainWindow):
         self.settings_button.clicked.connect(self.open_settings)
         top_bar.addWidget(self.settings_button)
 
+        project_row = QHBoxLayout()
+        project_row.setSpacing(12)
+        layout.addLayout(project_row)
+
         self.project_buttons = {}
         for name in PROJECTS:
-            button = QPushButton(name)
-            button.setMinimumHeight(76)
+            button = self.create_project_button(name)
             button.clicked.connect(lambda checked=False, project_name=name: self.start_rename(project_name))
             self.project_buttons[name] = button
-            layout.addWidget(button)
+            project_row.addWidget(button)
 
         self.status = QLabel("点击项目按钮开始命名。")
         layout.addWidget(self.status)
@@ -311,12 +476,97 @@ class MainWindow(QMainWindow):
         self.result_list = QListWidget()
         self.result_list.setFixedHeight(210)
         layout.addWidget(self.result_list)
+        self.refresh_project_selection()
+        self.refresh_work_count()
+
+    def create_project_button(self, project_name):
+        button = QToolButton()
+        button.setText(project_name)
+        button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        button.setIconSize(QSize(150, 112))
+        button.setMinimumSize(300, 170)
+        button.setCursor(Qt.PointingHandCursor)
+
+        logo_path = available_logo_path(project_name)
+        if logo_path:
+            button.setIcon(QIcon(logo_path))
+
+        button.setStyleSheet(
+            """
+            QToolButton {
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+                background: #353535;
+                color: #f0f0f0;
+                font-size: 14px;
+                padding: 12px;
+            }
+            QToolButton:hover {
+                background: #3f3f3f;
+                border-color: #666666;
+            }
+            QToolButton:pressed {
+                background: #2f2f2f;
+            }
+            QToolButton:disabled {
+                color: #888888;
+                background: #2b2b2b;
+            }
+            """
+        )
+        return button
+
+    def refresh_project_selection(self):
+        for project_name, button in self.project_buttons.items():
+            selected = project_name == self.selected_project_name
+            button.setProperty("selectedProject", selected)
+            button.setStyleSheet(self.project_button_stylesheet(selected))
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def project_button_stylesheet(self, selected):
+        if selected:
+            background = "#1f6f43"
+            hover = "#258350"
+            border = "#39d27d"
+        else:
+            background = "#353535"
+            hover = "#3f3f3f"
+            border = "#4a4a4a"
+        return f"""
+            QToolButton {{
+                border: 2px solid {border};
+                border-radius: 6px;
+                background: {background};
+                color: #f4f4f4;
+                font-size: 14px;
+                padding: 12px;
+            }}
+            QToolButton:hover {{
+                background: {hover};
+                border-color: #66e09b;
+            }}
+            QToolButton:pressed {{
+                background: #185934;
+            }}
+            QToolButton:disabled {{
+                color: #888888;
+                background: #2b2b2b;
+                border-color: #3a3a3a;
+            }}
+            """
+
+    def refresh_work_count(self):
+        works, _ = scan_works()
+        self.status.setText(f"检测到 {len(works)} 个作品。点击项目按钮开始命名。")
 
     def open_settings(self):
         dialog = SettingsDialog(self.data, self)
         if dialog.exec() == QDialog.Accepted:
             self.data = load_or_create_project_settings()
-            self.status.setText("设置已保存。")
+            self.selected_project_name = self.data.get("current_project", self.selected_project_name)
+            self.refresh_project_selection()
+            self.refresh_work_count()
 
     def start_rename(self, project_name):
         self.data = load_or_create_project_settings()
@@ -325,16 +575,40 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "配置不完整", "请先在设置中配置图片和视频输出文件夹。")
             return
 
+        works, nine_folders = scan_works()
         self.result_list.clear()
+        self.selected_project_name = project_name
+        self.refresh_project_selection()
         self.active_project_name = project_name
         self.data["current_project"] = project_name
         write_json(PROJECT_SETTINGS_PATH, self.data)
         write_runtime_config(project)
 
+        if nine_folders:
+            dialog = NineImageNameDialog(nine_folders, self)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            if dialog.exec() != QDialog.Accepted:
+                self.status.setText("已取消命名。")
+                return
+            handle = tempfile.NamedTemporaryFile(
+                "w",
+                delete=False,
+                suffix=".json",
+                encoding="utf-8-sig",
+                dir=str(BASE_DIR),
+            )
+            with handle:
+                json.dump(dialog.values(), handle, ensure_ascii=False, indent=4)
+            self.folder_name_map_path = handle.name
+        else:
+            self.folder_name_map_path = ""
+
         log_start = log_line_count()
         self.set_running(True)
-        self.status.setText(f"正在执行：{project_name}")
-        self.worker = RenameWorker(project["suffix"], log_start)
+        self.status.setText(f"检测到 {len(works)} 个作品。正在执行：{project_name}")
+        self.worker = RenameWorker(project["suffix"], log_start, self.folder_name_map_path)
         self.worker.finished_ok.connect(self.on_finished_ok)
         self.worker.failed.connect(self.on_failed)
         self.worker.start()
@@ -362,14 +636,26 @@ class MainWindow(QMainWindow):
             self.result_list.addItem(f"{new_name} | {detect_category(new_name)}")
 
         count = self.result_list.count()
-        self.status.setText(f"{self.active_project_name} 执行完成，成功 {count} 个。")
+        remaining_works, _ = scan_works()
+        self.status.setText(f"{self.active_project_name} 执行完成，成功 {count} 个。当前检测到 {len(remaining_works)} 个作品。")
         self.set_running(False)
+        self.cleanup_folder_name_map()
         QMessageBox.information(self, "完成", f"自动化命名已完成，成功 {count} 个。")
 
     def on_failed(self, message):
         self.set_running(False)
+        self.cleanup_folder_name_map()
+        self.refresh_work_count()
         self.status.setText("执行失败，请查看错误信息。")
         QMessageBox.critical(self, "执行失败", message)
+
+    def cleanup_folder_name_map(self):
+        if self.folder_name_map_path and Path(self.folder_name_map_path).exists():
+            try:
+                Path(self.folder_name_map_path).unlink()
+            except OSError:
+                pass
+        self.folder_name_map_path = ""
 
 
 def main():

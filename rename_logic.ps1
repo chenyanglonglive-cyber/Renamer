@@ -1,6 +1,7 @@
 # PowerShell Rename Logic (ASCII-Safe with Unicode Escapes)
 param(
-    [string]$ProjectSuffix = ""
+    [string]$ProjectSuffix = "",
+    [string]$FolderNameMapPath = ""
 )
 
 try { Add-Type -AssemblyName System.Drawing } catch {}
@@ -159,6 +160,16 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($ProjectSuffix)) {
         $PROJECT_SUFFIX_PART = "-$ProjectSuffix"
     }
+    $FOLDER_NAME_MAP = @{}
+    if (-not [string]::IsNullOrWhiteSpace($FolderNameMapPath) -and (Test-Path $FolderNameMapPath)) {
+        $mapRaw = Get-Content $FolderNameMapPath -Raw -Encoding UTF8
+        if (-not [string]::IsNullOrWhiteSpace($mapRaw)) {
+            $mapJson = $mapRaw | ConvertFrom-Json
+            foreach ($prop in $mapJson.PSObject.Properties) {
+                $FOLDER_NAME_MAP[$prop.Name] = [string]$prop.Value
+            }
+        }
+    }
     $v_cnt = 0
     $i_cnt = 0
 
@@ -166,7 +177,7 @@ try {
     $largeImageCount = 0
     $items = Get-ChildItem -Path $DIR
     foreach ($item in $items) {
-        if ($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|^\.') { continue }
+        if (($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|.*\.py|^\.') -or ($item.Name -in @('assets', '__pycache__'))) { continue }
         if ($item.PSIsContainer) {
             $sub = @(Get-ChildItem -Path $item.FullName -File)
             foreach ($f in $sub) {
@@ -197,7 +208,7 @@ try {
     # 4. Main Loop
     $items = Get-ChildItem -Path $DIR
     foreach ($item in $items) {
-        if ($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|^\.') { continue }
+        if (($item.Name -match 'settings\.json|sequence\.json|naming_log\.csv|.*\.bat|.*\.ps1|.*\.py|^\.') -or ($item.Name -in @('assets', '__pycache__'))) { continue }
         
         # A. Folders (9-image logic)
         if ($item.PSIsContainer) {
@@ -235,9 +246,14 @@ try {
                 continue
             }
             
-            try { Add-Type -AssemblyName Microsoft.VisualBasic } catch {}
-            $promptMsg = "9-Image sequence detected!`n`nFolder: $($item.Name)`n`nPlease enter the base name for these 9 images (e.g., 娴嬭瘯-涓変綋):"
-            $inputName = [Microsoft.VisualBasic.Interaction]::InputBox($promptMsg, "Provide Initial Name", $item.Name)
+            $inputName = $null
+            if ($FOLDER_NAME_MAP.ContainsKey($item.FullName)) {
+                $inputName = $FOLDER_NAME_MAP[$item.FullName]
+            } else {
+                try { Add-Type -AssemblyName Microsoft.VisualBasic } catch {}
+                $promptMsg = "9-Image sequence detected!`n`nFolder: $($item.Name)`n`nPlease enter the base name for these 9 images:"
+                $inputName = [Microsoft.VisualBasic.Interaction]::InputBox($promptMsg, "Provide Initial Name", $item.Name)
+            }
             
             if ([string]::IsNullOrWhiteSpace($inputName)) {
                 $objShell = New-Object -ComObject WScript.Shell
